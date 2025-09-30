@@ -11,15 +11,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # === CONFIGURATION ===
-SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Free Google Custom Search API
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")    # Custom Search Engine ID
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LOCATION = os.getenv("LOCATION", "Durham, NC")  # Default to Durham, NC if not set
 
 # Validate that required API keys are present
-if not SERPAPI_API_KEY:
-    raise ValueError("SERPAPI_API_KEY not found in environment variables. Please set it in your .env file.")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY not found in environment variables. Please set it in your .env file.")
+    
+# Google Custom Search is optional - will fall back to direct scraping if not available
+USE_GOOGLE_SEARCH = GOOGLE_API_KEY and GOOGLE_CSE_ID
+if not USE_GOOGLE_SEARCH:
+    print("⚠️  Google Custom Search API not configured. Using direct scraping method.")
+    print("   For better results, set up free Google Custom Search API (100 searches/day)")
+    print("   Get keys at: https://developers.google.com/custom-search/v1/introduction")
 SEARCH_TERMS = {
     "facebook": [
         '"need a painter" site:facebook.com/groups "durham"',
@@ -92,17 +98,106 @@ MAX_RESULTS = 5  # Per query
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# === STEP 1: Search Google with SerpAPI ===
-def google_search(query):
+# === STEP 1: Free Google Custom Search API ===
+def google_custom_search(query):
+    """Use free Google Custom Search API (100 searches/day limit)"""
+    if not USE_GOOGLE_SEARCH:
+        return []
+    
+    url = "https://www.googleapis.com/customsearch/v1"
     params = {
-        "engine": "google",
+        "key": GOOGLE_API_KEY,
+        "cx": GOOGLE_CSE_ID,
         "q": query,
-        "location": LOCATION,
-        "api_key": SERPAPI_API_KEY,
-        "tbs": "qdr:m"  # Last month
+        "num": MAX_RESULTS,
+        "dateRestrict": "m1"  # Last month
     }
-    res = requests.get("https://serpapi.com/search", params=params)
-    return res.json().get("organic_results", [])
+    
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        results = []
+        for item in data.get("items", []):
+            results.append({
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "snippet": item.get("snippet", "")
+            })
+        return results
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Google Custom Search API error: {e}")
+        return []
+    except Exception as e:
+        print(f"Error parsing Google search results: {e}")
+        return []
+
+# === STEP 1B: Fallback Direct Search Methods ===
+def search_reddit_directly(query_terms):
+    """Direct Reddit search using Reddit's JSON API (no auth required)"""
+    results = []
+    # Remove site: restriction and quotes for direct Reddit API
+    clean_query = query_terms.replace('site:reddit.com/r/durham', '').replace('"', '').strip()
+    
+    try:
+        # Search in Durham subreddit
+        url = f"https://www.reddit.com/r/durham/search.json"
+        params = {
+            "q": clean_query,
+            "restrict_sr": "1",
+            "sort": "new",
+            "t": "month",
+            "limit": MAX_RESULTS
+        }
+        
+        headers = {"User-Agent": "LeadGeneratorBot/1.0"}
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            for post in data.get("data", {}).get("children", []):
+                post_data = post.get("data", {})
+                results.append({
+                    "title": post_data.get("title", ""),
+                    "link": f"https://reddit.com{post_data.get('permalink', '')}",
+                    "snippet": post_data.get("selftext", "")[:200] + "..."
+                })
+    except Exception as e:
+        print(f"Reddit search error: {e}")
+    
+    return results
+
+def search_facebook_groups(query_terms):
+    """
+    Note: Facebook has strict API restrictions. 
+    This is a placeholder for educational purposes.
+    Real implementation would require Facebook Graph API with proper permissions.
+    """
+    print("⚠️  Facebook Group search requires Facebook Graph API with special permissions")
+    print("   Consider manually checking Facebook groups or using other platforms")
+    return []
+
+def google_search(query):
+    """Main search function that tries multiple free methods"""
+    results = []
+    
+    # Method 1: Try Google Custom Search API (if configured)
+    if USE_GOOGLE_SEARCH:
+        print(f"🔍 Searching with Google Custom Search: {query}")
+        results = google_custom_search(query)
+    
+    # Method 2: If no results and it's a Reddit query, try direct Reddit API
+    if not results and "reddit.com" in query:
+        print(f"🔍 Searching Reddit directly: {query}")
+        results = search_reddit_directly(query)
+    
+    # Method 3: If no results and it's a Facebook query, notify user
+    if not results and "facebook.com" in query:
+        results = search_facebook_groups(query)
+    
+    return results
 
 # === STEP 2: Scrape Page Text ===
 def scrape_text(url):
