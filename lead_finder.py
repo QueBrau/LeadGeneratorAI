@@ -134,6 +134,39 @@ def google_custom_search(query):
         print(f"Error parsing Google search results: {e}")
         return []
 
+# === STEP 1A: Advanced Duplicate Detection ===
+def is_similar_content(text1, text2, threshold=0.8):
+    """Check if two pieces of text are too similar (likely duplicates)"""
+    if not text1 or not text2:
+        return False
+    
+    # Normalize text for comparison
+    def normalize_text(text):
+        return ' '.join(text.lower().split())
+    
+    norm1 = normalize_text(text1)
+    norm2 = normalize_text(text2)
+    
+    # Simple similarity check using character overlap
+    if len(norm1) == 0 or len(norm2) == 0:
+        return False
+    
+    # Calculate overlap percentage
+    shorter = min(len(norm1), len(norm2))
+    longer = max(len(norm1), len(norm2))
+    
+    # If one text is much shorter, check if it's contained in the other
+    if shorter / longer < 0.5:
+        return norm1 in norm2 or norm2 in norm1
+    
+    # For similar length texts, check character overlap
+    set1 = set(norm1)
+    set2 = set(norm2)
+    overlap = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    
+    return (overlap / union) > threshold if union > 0 else False
+
 # === STEP 1B: Fallback Direct Search Methods ===
 def search_reddit_directly(query_terms):
     """Direct Reddit search using Reddit's JSON API (no auth required)"""
@@ -212,18 +245,42 @@ def scrape_text(url):
 
 # === STEP 3: Ask OpenAI to Qualify Lead ===
 def is_good_lead(text):
-    prompt = f"""You are a lead qualification agent for a contracting business offering remodeling, painting, and landscaping in Durham, NC.
+    prompt = f"""You are a lead qualification agent for a HOME IMPROVEMENT CONTRACTING business in Durham, NC.
 
-Your task is to identify if the following web content is a **real customer seeking services** — not a business advertisement, not a contractor website, not a directory listing, and not a blog or article.
+We provide these SPECIFIC SERVICES:
+• Interior/Exterior Painting
+• Kitchen & Bathroom Remodeling  
+• Drywall Repair & Installation
+• Deck Building & Repair
+• Landscaping & Yard Work
+• Siding & Roofing Repair
+• Flooring Installation
+• General Handyman Services
+• Power Washing
+• Fence Installation
 
-DO NOT validate:
-- Other contractors advertising themselves
-- Listings or directories (like Yelp, Angi, etc.)
-- Anything older than 1 month (especially on Reddit)
-- Informational pages or reviews
-- If it is not in or around Durham, NC
+Your task is to identify if this content is a REAL HOMEOWNER/CUSTOMER actively seeking one of our services.
 
-Only validate if it's a person or post **clearly asking for help with a service we offer**.
+❌ REJECT if it's:
+• Another contractor/business advertising services
+• Job postings or hiring contractors
+• Product sales or equipment sales
+• Real estate listings or home sales
+• Directory listings (Yelp, Angi, HomeAdvisor, etc.)
+• Reviews, ratings, or informational content
+• DIY tutorials or how-to guides
+• Old posts (over 1 month old)
+• Not in Durham, NC or surrounding areas (Raleigh, Chapel Hill, Cary acceptable)
+• General questions without clear service need
+
+✅ ACCEPT ONLY if it's:
+• A homeowner asking for quotes/estimates
+• Someone requesting specific work we do
+• Clear service request with urgency or timeline
+• Residential property work (not commercial)
+• Located in our service area
+
+Look for phrases like: "need", "looking for", "can anyone recommend", "quote", "estimate", "help with", "repair", "install", "paint", "remodel"
 
 Here is the content:
 
@@ -231,13 +288,15 @@ Here is the content:
 {text[:1000]}
 --- END ---
 
-Answer "Yes" or "No", and explain in one sentence."""
+Be very strict. Answer "Yes" ONLY if this is clearly a potential customer needing our services. Answer "No" for everything else.
+
+Format: "Yes/No - [Brief reason why this is/isn't a qualified lead]" """
     
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.1,  # Lower temperature for more consistent filtering
         )
         reply = response.choices[0].message.content
         return "yes" in reply.lower(), reply
